@@ -1,0 +1,21 @@
+######################### mmpose ###########################
+# 3D手部姿态图片
+python demo/interhand3d_img_demo.py configs/hand/3d_kpt_sview_rgb_img/internet/interhand3d/res50_interhand3d_all_256x256.py https://download.openmmlab.com/mmpose/hand3d/internet/res50_intehand3d_all_256x256-b9c1cf4c_20210506.pth --json-file tests/data/interhand2.6m/test_interhand2.6m_data.json --img-root tests/data/interhand2.6m --camera-param-file tests/data/interhand2.6m/test_interhand2.6m_camera.json --gt-joints-file tests/data/interhand2.6m/test_interhand2.6m_joint_3d.json --out-img-root vis_results --rebase-keypoint-height --show-ground-truth
+
+# 2D手部追踪 姿态估计
+python model/mmpose/top_down_pose_tracking_demo_with_mmdet.py model/mmpose/faster_rcnn_r50_fpn_coco.py model/mmpose/faster_rcnn_r50_fpn_1x_coco_20200130-047c8118.pth model/mmpose/mobilenetv2_onehand10k_256x256.py model/mmpose/mobilenetv2_onehand10k_256x256.pth --video-path D:\Code\PythonCode\YOLOX\assets\hand5.mp4 --show
+
+# python model/mmpose/top_down_pose_tracking_demo_with_mmdet.py https://download.openmmlab.com/mmdetection/v2.0/faster_rcnn/faster_rcnn_r50_fpn_1x_coco/faster_rcnn_r50_fpn_1x_coco_20200130-047c8118.pth --video-path D:\Code\PythonCode\YOLOX\assets\hand5.mp4 --show
+
+--show 和 --out-video-root 路径必须选择一个
+
+
+######################### YOLOX ###########################
+# 检测
+python model/YOLOX/demo.py webcam -f model/YOLOX/yolox_s.py -c model/YOLOX/v1_conf03_nms045.pth --conf 0.25 --nms 0.3 --tsize 640 --device gpu --save_result
+
+
+######################### 修改后 ###########################
+
+python model/mmpose/top_down_pose_tracking_demo_with_mmdet.py
+python model/YOLOX/demo.py
