@@ -18,11 +18,29 @@ from yolox.utils import fuse_model, get_model_info, postprocess
 # camera config
 pipeline = rs.pipeline()
 config = rs.config()
+
 config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
 config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+
 pipeline.start(config)
+
 align_to = rs.stream.color
 align = rs.align(align_to)
+
+profile = pipeline.get_active_profile()
+depth_profile = rs.video_stream_profile(profile.get_stream(rs.stream.depth))
+depth_intrinsics = depth_profile.get_intrinsics()
+w, h = depth_intrinsics.width, depth_intrinsics.height
+print("w")
+print(w)
+print("h")
+print(h)
+
+# Processing blocks
+pc = rs.pointcloud()
+decimate = rs.decimation_filter()  # decimate 毁灭
+decimate.set_option(rs.option.filter_magnitude, 2)
+colorizer = rs.colorizer()
 
 # detect config
 IMAGE_EXT = [".jpg", ".jpeg", ".webp", ".bmp", ".png"]
@@ -58,22 +76,6 @@ tracking_thr = 0.3  # Tracking threshold
 euro = False  # Using One_Euro_Filter for smoothing
 radius = 4  # Keypoint radius for visualization
 thickness = 1  # Link thickness for visualization
-
-
-# 获取深度图像
-def getDeepMap():
-    frames = pipeline.wait_for_frames()
-    aligned_frames = align.process(frames)
-
-    aligned_depth_frame = aligned_frames.get_depth_frame()
-    color_frame = aligned_frames.get_color_frame()
-
-    # depth_data = np.asanyarray(aligned_depth_frame.get_data(), dtype="float16")
-    depth_image = np.asanyarray(aligned_depth_frame.get_data())
-    color_image = np.asanyarray(color_frame.get_data())
-    depth_mapped_image = cv2.applyColorMap(cv2.convertScaleAbs(depth_image, alpha=0.03), cv2.COLORMAP_JET)
-    # return color_image, depth_mapped_image
-    return color_image, aligned_depth_frame, depth_mapped_image
 
 
 class YOLOXPredictor(object):
@@ -130,6 +132,33 @@ class YOLOXPredictor(object):
         return outputs, img_info
 
 
+def roi_generator():
+    return
+
+
+# 输入各个姿态的点,以及需要扩大的距离
+def roi_normalizer(person_results, dist):
+    # 逐个扩大并限制高度
+    for item in person_results:
+        print(item)
+        item[0] = max((int(item["bbox"][0]) - dist), 0)  # x
+        item[1] = max((int(item["bbox"][1]) - dist), 0)  # y
+        item[2] = min((int(item["bbox"][2]) + 2 * dist), w)  # w
+        item[3] = min((int(item["bbox"][3]) + 2 * dist), h)  # h
+
+    return person_results
+
+
+def depth2xyz(u, v, depth_value, fx, fy, cx, cy):
+    depth = depth_value * 0.001  # depth2mi
+    z = float(depth)
+    x = float((u - cx) * z) / fx
+    y = float((v - cy) * z) / fy
+
+    result = [x, y, z]
+    return result
+
+
 def main(exp):
     ################################## detect ##############################################
     global experiment_name
@@ -163,9 +192,8 @@ def main(exp):
         logger.info("\tFusing model...")
         det_model = fuse_model(det_model)
 
-    trt_file = None
     decoder = None
-    yolox = YOLOXPredictor(det_model, exp, COCO_CLASSES, trt_file, decoder, det_device, legacy)
+    yolox = YOLOXPredictor(det_model, exp, COCO_CLASSES, decoder, det_device, legacy)
 
     ####################################### pose #########################################
 
@@ -196,31 +224,98 @@ def main(exp):
 
         pose_results_last = pose_results
         # camera
-        img, aligned_depth_frame, depth_mapped_image = getDeepMap()
+
+        # Wait for a coherent pair of frames: depth and color
+        frames = pipeline.wait_for_frames()
+
+        depth_frame = frames.get_depth_frame()
+        # depth_frame = decimate.process(depth_frame)   # 注意!这里缩小了一半
+        color_frame = frames.get_color_frame()
+
+        # global w, h
+        # w, h = depth_intrinsics.width, depth_intrinsics.height
+        # print("w")
+        # print(w)
+        # print("h")
+        # print(h)
+
+        depth_image = np.asanyarray(depth_frame.get_data())
+        color_image = np.asanyarray(color_frame.get_data())
+
+        # print("depth_image.shape")
+        # print(depth_image.shape)  # 注意!宽度和深度是反过来的
+        # print("depth_image")
+        # print(depth_image)
+
+        # mapped_frame, color_source = color_frame, color_image
+        #
+        # points = pc.calculate(depth_frame)
+        # pc.map_to(mapped_frame)
+        #
+        # # Pointcloud data to arrays
+        # v, t = points.get_vertices(), points.get_texture_coordinates()  # get_vertices 顶点 get_texture_coordinates 贴图坐标
+        # verts = np.asanyarray(v).view(np.float32).reshape(-1, 3)  # xyz     空间坐标
+        # texcoords = np.asanyarray(t).view(np.float32).reshape(-1, 2)  # uv  投影坐标
 
         # detect hand
-        outputs, img_info = yolox.inference(img)
+        outputs, img_info = yolox.inference(color_image)
         if outputs == [None]:
             continue
-        print(outputs)
-        print(outputs[0])
-        print(outputs[0].cpu().numpy().tolist())
-        blist = outputs[0].cpu().numpy().tolist()
+        # print(outputs)
+        # print(outputs[0])
+        # print(outputs[0].cpu().numpy().tolist())
+        bbox_list = outputs[0].cpu().numpy().tolist()
         person_results = []
-        for item in blist:
+        for item in bbox_list:
             person_results.append(dict(bbox=np.array(item[:5], dtype=np.float32)))
+
+        # print("person_results:")
+        # print(person_results)
+
+        # TODO 选择器
+
+        # TODO 标准化
+        normal_results = roi_normalizer(person_results, 10)
 
         # hand pose (test a single image, with a list of bboxes)
         pose_results, returned_outputs = inference_top_down_pose_model(
             pose_model,
-            img,
-            person_results,
+            color_image,
+            normal_results,
             bbox_thr=bbox_thr,
             format='xyxy',
             dataset=dataset,
             dataset_info=dataset_info,
-            return_heatmap=False,  # dosen't work
-            outputs=None)  # e.g. use ('backbone', ) to return backbone feature ? dosen't work
+            return_heatmap=True,
+            outputs=None)
+
+        # TODO 升维
+        # 大意了,pose result返回的坐标是浮点(因为是heatmap)和像素无关 但是官方的是直接加一个int就行了啊
+
+        print("pose_results")
+        print(pose_results)
+        if pose_results==[]:
+            continue
+        # print("=======")
+        # print(returned_outputs)
+        # print("pose_results[0]")
+        # print(pose_results[0])
+        # print(pose_results[0].keys())
+        # print(pose_results[0]["keypoints"])
+
+        # pose_results[0]["keypoints"] 这个会outof range
+        for item in pose_results[0]["keypoints"]:  # 每个item前两个是关键点的坐标,后面一个置信度.
+            # print(item)
+            x = max(min(int(item[0]), h-1), 0)
+            y = max(min(int(item[1]), w-1), 0)
+            xyz = depth2xyz(item[0], item[1],
+                            depth_image[x, y],  # 宽高是相反的,heatmap预测的是浮点要转int,同时要从零开始
+                            depth_intrinsics.fx,
+                            depth_intrinsics.fy,
+                            depth_intrinsics.ppx,
+                            depth_intrinsics.ppy)
+            print("xyz")
+            print(xyz)
 
         # get track id for each person instance
         pose_results, next_id = get_track_id(
@@ -232,10 +327,13 @@ def main(exp):
             use_one_euro=euro,
             fps=fps)
 
+        # print(pose_results)   # 和上面差不多,多了area和track_id
+        # print("pose_results")
+
         # show the results
         vis_img = vis_pose_tracking_result(
             pose_model,
-            img,
+            color_image,
             pose_results,
             radius=radius,
             thickness=thickness,
