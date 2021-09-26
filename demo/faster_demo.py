@@ -132,31 +132,145 @@ class YOLOXPredictor(object):
         return outputs, img_info
 
 
-def roi_generator():
-    return
+def get_stream():
+    # Wait for a coherent pair of frames: depth and color
+    frames = pipeline.wait_for_frames()
+
+    depth_frame = frames.get_depth_frame()
+    # depth_frame = decimate.process(depth_frame)   # 注意!这里缩小了一半
+    color_frame = frames.get_color_frame()
+
+    # global w, h
+    # w, h = depth_intrinsics.width, depth_intrinsics.height
+    # print("w")
+    # print(w)
+    # print("h")
+    # print(h)
+
+    depth_image = np.asanyarray(depth_frame.get_data())
+    color_image = np.asanyarray(color_frame.get_data())
+
+    # print("depth_image.shape")
+    # print(depth_image.shape)  # 注意!宽度和深度是反过来的
+    # print("depth_image")
+    # print(depth_image)
+
+    # mapped_frame, color_source = color_frame, color_image
+    #
+    # points = pc.calculate(depth_frame)
+    # pc.map_to(mapped_frame)
+    #
+    # # Pointcloud data to arrays
+    # v, t = points.get_vertices(), points.get_texture_coordinates()  # get_vertices 顶点 get_texture_coordinates 贴图坐标
+    # verts = np.asanyarray(v).view(np.float32).reshape(-1, 3)  # xyz     空间坐标
+    # texcoords = np.asanyarray(t).view(np.float32).reshape(-1, 2)  # uv  投影坐标
+    return depth_image, color_image
+
+
+def select_stream(flag, yolox, color_image, MBR):
+    if flag == True:  # 上一帧有检测到手势,使用上一帧的最小外接矩形
+        return True, MBR  # 同时默认这一帧也能检测到,检测不到后续再给False
+    else:
+        # detect hand
+        hand_results = detect_hand(yolox, color_image)
+        if hand_results == []:
+            return False, []
+        else:
+            return True, hand_results  # 检测到手势
 
 
 # 输入各个姿态的点,以及需要扩大的距离
-def roi_normalizer(person_results, dist):
+def roi_normalizer(hand_results, dist):
     # 逐个扩大并限制高度
-    for item in person_results:
-        print(item)
+    for item in hand_results:
+        # print("roi_normalizer item")
+        # print(item)
         item[0] = max((int(item["bbox"][0]) - dist), 0)  # x
         item[1] = max((int(item["bbox"][1]) - dist), 0)  # y
         item[2] = min((int(item["bbox"][2]) + 2 * dist), w)  # w
         item[3] = min((int(item["bbox"][3]) + 2 * dist), h)  # h
 
-    return person_results
+    return hand_results
 
 
-def depth2xyz(u, v, depth_value, fx, fy, cx, cy):
-    depth = depth_value * 0.001  # depth2mi
+# TODO 为什么x轴算出来的都输负数
+# The cameras principle point are descried by ppx and ppy,
+# thus correspond to cx and cy respectively which is usally used in literature.
+def depth2xyz(u, v, depth, fx, fy, ppx, ppy):
+    # depth = depth * 0.001  # depth2mi
+    # 有畸变 ppx 和 ppy 是用来j矫正的参数
+
     z = float(depth)
-    x = float((u - cx) * z) / fx
-    y = float((v - cy) * z) / fy
+    x = float((u - ppx) * z) / fx
+    y = float((v - ppy) * z) / fy
 
     result = [x, y, z]
     return result
+
+
+def roi_generator_Ascender(pose_results, depth_image):
+    min_x = w
+    min_y = h
+    max_x = 0
+    max_y = 0
+
+    # pose_results[0]["keypoints"] 这个会outof range
+    for item in pose_results[0]["keypoints"]:  # 每个item前两个是关键点的坐标,后面一个置信度.
+        # print("pose_results[0][keypoints] item")
+        # print(item)
+        # 最小外接矩形
+        if item[0] < min_x:
+            min_x = item[0]
+        if item[0] > max_x:
+            max_x = item[0]
+        if item[1] < min_y:
+            min_y = item[1]
+        if item[1] > max_y:
+            max_y = item[1]
+
+        # 映射 升维
+        x = max(min(int(item[0]), h - 1), 0)
+        y = max(min(int(item[1]), w - 1), 0)
+        xyz = depth2xyz(item[0], item[1],
+                        depth_image[x, y],  # 宽高是相反的,heatmap预测的是浮点要转int,同时要从零开始
+                        depth_intrinsics.fx,
+                        depth_intrinsics.fy,
+                        depth_intrinsics.ppx,
+                        depth_intrinsics.ppy)
+        # print("xyz")
+        # print(xyz)
+
+    # print("min_x")
+    # print(min_x)
+    # print("min_y")
+    # print(min_y)
+    # print("max_x")
+    # print(max_x)
+    # print("max_y")
+    # print(max_y)
+    bbox = [min_x, min_y, max_x, max_y, 0.99]  # Minimum Area Bounding Rectangle 最后面一个是置信度
+    MBR = [dict(bbox=np.array(bbox, dtype=np.float32))]
+
+    # print("MBR")
+    # print(MBR)
+    return MBR, xyz
+
+
+def detect_hand(yolox, color_image):
+    outputs, img_info = yolox.inference(color_image)
+    hand_results = []
+    if outputs == [None]:
+        return hand_results
+    # print(outputs)
+    # print(outputs[0])
+    # print(outputs[0].cpu().numpy().tolist())
+    bbox_list = outputs[0].cpu().numpy().tolist()
+    for item in bbox_list:
+        hand_results.append(dict(bbox=np.array(item[:5], dtype=np.float32)))
+    # print("hand_results:")
+    # print(hand_results)
+
+    return hand_results
 
 
 def main(exp):
@@ -220,63 +334,27 @@ def main(exp):
 
     ####################################### start #########################################
 
+    flag = False  # 上一帧是否检测到手部关键点,初始化为否
+    MBR = []
+
     while True:
 
+        # tracking
         pose_results_last = pose_results
+
         # camera
+        depth_image, color_image = get_stream()
 
-        # Wait for a coherent pair of frames: depth and color
-        frames = pipeline.wait_for_frames()
+        # TODO 选择器 输出流
 
-        depth_frame = frames.get_depth_frame()
-        # depth_frame = decimate.process(depth_frame)   # 注意!这里缩小了一半
-        color_frame = frames.get_color_frame()
+        flag, hand_results = select_stream(flag, yolox, color_image, MBR)
+        if flag == False:
+            continue  # 没有检测到手部,直接跳到下一帧,并且调用目标检测器
 
-        # global w, h
-        # w, h = depth_intrinsics.width, depth_intrinsics.height
-        # print("w")
-        # print(w)
-        # print("h")
-        # print(h)
+        # 标准化 加大力度
+        normal_results = roi_normalizer(hand_results, 10)
 
-        depth_image = np.asanyarray(depth_frame.get_data())
-        color_image = np.asanyarray(color_frame.get_data())
-
-        # print("depth_image.shape")
-        # print(depth_image.shape)  # 注意!宽度和深度是反过来的
-        # print("depth_image")
-        # print(depth_image)
-
-        # mapped_frame, color_source = color_frame, color_image
-        #
-        # points = pc.calculate(depth_frame)
-        # pc.map_to(mapped_frame)
-        #
-        # # Pointcloud data to arrays
-        # v, t = points.get_vertices(), points.get_texture_coordinates()  # get_vertices 顶点 get_texture_coordinates 贴图坐标
-        # verts = np.asanyarray(v).view(np.float32).reshape(-1, 3)  # xyz     空间坐标
-        # texcoords = np.asanyarray(t).view(np.float32).reshape(-1, 2)  # uv  投影坐标
-
-        # detect hand
-        outputs, img_info = yolox.inference(color_image)
-        if outputs == [None]:
-            continue
-        # print(outputs)
-        # print(outputs[0])
-        # print(outputs[0].cpu().numpy().tolist())
-        bbox_list = outputs[0].cpu().numpy().tolist()
-        person_results = []
-        for item in bbox_list:
-            person_results.append(dict(bbox=np.array(item[:5], dtype=np.float32)))
-
-        # print("person_results:")
-        # print(person_results)
-
-        # TODO 选择器
-
-        # TODO 标准化
-        normal_results = roi_normalizer(person_results, 10)
-
+        # 关键点检测
         # hand pose (test a single image, with a list of bboxes)
         pose_results, returned_outputs = inference_top_down_pose_model(
             pose_model,
@@ -289,12 +367,12 @@ def main(exp):
             return_heatmap=True,
             outputs=None)
 
-        # TODO 升维
+        # 升维 获得最小外接矩形
         # 大意了,pose result返回的坐标是浮点(因为是heatmap)和像素无关 但是官方的是直接加一个int就行了啊
-
-        print("pose_results")
-        print(pose_results)
-        if pose_results==[]:
+        # print("pose_results")
+        # print(pose_results)
+        if pose_results == []:
+            flag = False  # 没有检测到手势,下一帧要调用目标检测.
             continue
         # print("=======")
         # print(returned_outputs)
@@ -303,20 +381,10 @@ def main(exp):
         # print(pose_results[0].keys())
         # print(pose_results[0]["keypoints"])
 
-        # pose_results[0]["keypoints"] 这个会outof range
-        for item in pose_results[0]["keypoints"]:  # 每个item前两个是关键点的坐标,后面一个置信度.
-            # print(item)
-            x = max(min(int(item[0]), h-1), 0)
-            y = max(min(int(item[1]), w-1), 0)
-            xyz = depth2xyz(item[0], item[1],
-                            depth_image[x, y],  # 宽高是相反的,heatmap预测的是浮点要转int,同时要从零开始
-                            depth_intrinsics.fx,
-                            depth_intrinsics.fy,
-                            depth_intrinsics.ppx,
-                            depth_intrinsics.ppy)
-            print("xyz")
-            print(xyz)
+        # TODO 处理MBR 和 hand_result
+        MBR, xyz = roi_generator_Ascender(pose_results, depth_image)
 
+        # 目标跟踪,获取id
         # get track id for each person instance
         pose_results, next_id = get_track_id(
             pose_results,
@@ -330,6 +398,7 @@ def main(exp):
         # print(pose_results)   # 和上面差不多,多了area和track_id
         # print("pose_results")
 
+        # 渲染
         # show the results
         vis_img = vis_pose_tracking_result(
             pose_model,
