@@ -62,9 +62,11 @@ name = None
 
 # pose config
 det_config = "../model/mmpose/faster_rcnn_r50_fpn_coco.py"
-det_checkpoint = "../model/mmpose/faster_rcnn_r50_fpn_1x_coco_20200130-047c8118.pth"
+# det_checkpoint = "../model/mmpose/faster_rcnn_r50_fpn_1x_coco_20200130-047c8118.pth"
+det_checkpoint = "../model/weight/faster_rcnn_r50_fpn_1x_coco_20200130-047c8118.pth"
 pose_config = "../model/mmpose/mobilenetv2_onehand10k_256x256.py"
-pose_checkpoint = "../model/mmpose/mobilenetv2_onehand10k_256x256.pth"
+# pose_checkpoint = "../model/mmpose/mobilenetv2_onehand10k_256x256.pth"
+pose_checkpoint = "../model/weight/mobilenetv2_onehand10k_256x256.pth"
 video_path = "D:\\Code\\PythonCode\\YOLOX\\assets\\hand5.mp4"
 pose_device = 'cuda:0'
 out_video_root = ""
@@ -128,7 +130,7 @@ class YOLOXPredictor(object):
                 outputs, self.num_classes, self.confthre,
                 self.nmsthre, class_agnostic=True
             )
-            logger.info("Infer time: {:.4f}s".format(time.time() - t0))
+            # logger.info("Infer time: {:.4f}s".format(time.time() - t0))
         return outputs, img_info
 
 
@@ -339,6 +341,9 @@ def main(exp):
 
     while True:
 
+        # timer
+        start_t = time.time()
+
         # tracking
         pose_results_last = pose_results
 
@@ -411,7 +416,11 @@ def main(exp):
             kpt_score_thr=kpt_thr,
             show=False)
 
-        cv2.imshow('Image', vis_img)
+        # timer
+        all_time = time.time() - start_t
+        print(all_time)
+
+        # cv2.imshow('Image', vis_img)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
