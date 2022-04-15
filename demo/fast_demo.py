@@ -248,7 +248,7 @@ def main(exp):
             kpt_score_thr=kpt_thr,
             show=False)
 
-        # cv2.imshow('Image', vis_img)
+        cv2.imshow('Image', vis_img)
 
         # timer
         all_time = time.time()-start_t
